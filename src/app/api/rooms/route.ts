@@ -6,6 +6,6 @@ export async function POST(req: Request) {
   if (!name || !hostName) {
     return NextResponse.json({ error: "name and hostName required" }, { status: 400 });
   }
-  const room = createRoom(name.trim(), hostName.trim());
+  const room = await createRoom(name.trim(), hostName.trim());
   return NextResponse.json(room);
 }

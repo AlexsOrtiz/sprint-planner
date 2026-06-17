@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { getRoom, updateRoom, addParticipant } from "@/lib/room-store";
+import { getRoom, saveRoom, deleteRoom, addParticipant } from "@/lib/room-store";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ code: string }> }
 ) {
   const { code } = await params;
-  const room = getRoom(code);
+  const room = await getRoom(code);
   if (!room) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });
   }
@@ -25,65 +25,61 @@ export async function POST(
     case "join": {
       const { name } = body;
       if (!name) return NextResponse.json({ error: "name required" }, { status: 400 });
-      const result = addParticipant(code, name);
+      const result = await addParticipant(code, name);
       if (!result) return NextResponse.json({ error: "Room not found" }, { status: 404 });
       return NextResponse.json(result);
     }
 
-    case "vote": {
-      const { participantId, value } = body;
-      const updated = updateRoom(code, (r) => {
-        const filtered = r.votes.filter((v) => v.participantId !== participantId);
-        return { ...r, votes: [...filtered, { participantId, value }] };
-      });
-      if (!updated) return NextResponse.json({ error: "Room not found" }, { status: 404 });
-      return NextResponse.json(updated);
-    }
+    default: {
+      const room = await getRoom(code);
+      if (!room) return NextResponse.json({ error: "Room not found" }, { status: 404 });
 
-    case "reveal": {
-      const updated = updateRoom(code, (r) => ({ ...r, revealed: true }));
-      if (!updated) return NextResponse.json({ error: "Room not found" }, { status: 404 });
-      return NextResponse.json(updated);
-    }
+      switch (action) {
+        case "vote": {
+          const { participantId, value } = body;
+          room.votes = room.votes.filter((v) => v.participantId !== participantId);
+          room.votes.push({ participantId, value });
+          break;
+        }
+        case "reveal":
+          room.revealed = true;
+          break;
+        case "new-round":
+          room.votes = [];
+          room.revealed = false;
+          room.round += 1;
+          break;
+        case "toggle-role": {
+          const { participantId } = body;
+          room.participants = room.participants.map((p) =>
+            p.id === participantId
+              ? { ...p, role: p.role === "voter" ? "observer" as const : "voter" as const }
+              : p
+          );
+          room.votes = room.votes.filter((v) => v.participantId !== participantId);
+          break;
+        }
+        case "remove-participant": {
+          const { participantId } = body;
+          room.participants = room.participants.filter((p) => p.id !== participantId);
+          room.votes = room.votes.filter((v) => v.participantId !== participantId);
+          break;
+        }
+        default:
+          return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+      }
 
-    case "new-round": {
-      const updated = updateRoom(code, (r) => ({
-        ...r,
-        votes: [],
-        revealed: false,
-        round: r.round + 1,
-      }));
-      if (!updated) return NextResponse.json({ error: "Room not found" }, { status: 404 });
-      return NextResponse.json(updated);
+      await saveRoom(room);
+      return NextResponse.json(room);
     }
-
-    case "toggle-role": {
-      const { participantId } = body;
-      const updated = updateRoom(code, (r) => ({
-        ...r,
-        participants: r.participants.map((p) =>
-          p.id === participantId
-            ? { ...p, role: p.role === "voter" ? "observer" as const : "voter" as const }
-            : p
-        ),
-        votes: r.votes.filter((v) => v.participantId !== participantId),
-      }));
-      if (!updated) return NextResponse.json({ error: "Room not found" }, { status: 404 });
-      return NextResponse.json(updated);
-    }
-
-    case "remove-participant": {
-      const { participantId } = body;
-      const updated = updateRoom(code, (r) => ({
-        ...r,
-        participants: r.participants.filter((p) => p.id !== participantId),
-        votes: r.votes.filter((v) => v.participantId !== participantId),
-      }));
-      if (!updated) return NextResponse.json({ error: "Room not found" }, { status: 404 });
-      return NextResponse.json(updated);
-    }
-
-    default:
-      return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   }
+}
+
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ code: string }> }
+) {
+  const { code } = await params;
+  await deleteRoom(code);
+  return NextResponse.json({ ok: true });
 }

@@ -1,16 +1,15 @@
+import { Redis } from "@upstash/redis";
 import { Room } from "./types";
 
-const rooms = new Map<string, Room>();
-
-export function generateRoomCode(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 5; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
-  if (rooms.has(code)) return generateRoomCode();
-  return code;
+function getRedis() {
+  return Redis.fromEnv();
 }
+
+function roomKey(code: string) {
+  return `room:${code.toUpperCase()}`;
+}
+
+const ROOM_TTL = 60 * 60 * 12; // 12 hours
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
@@ -22,7 +21,17 @@ const COLORS = [
   "#e11d48", "#0ea5e9", "#84cc16", "#a855f7", "#d946ef",
 ];
 
-export function createRoom(name: string, hostName: string): Room {
+export function generateRoomCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 5; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+export async function createRoom(name: string, hostName: string): Promise<Room> {
+  const redis = getRedis();
   const code = generateRoomCode();
   const room: Room = {
     code,
@@ -41,38 +50,44 @@ export function createRoom(name: string, hostName: string): Room {
     round: 1,
     createdAt: new Date().toISOString(),
   };
-  rooms.set(code, room);
+  await redis.set(roomKey(code), JSON.stringify(room), { ex: ROOM_TTL });
   return room;
 }
 
-export function getRoom(code: string): Room | undefined {
-  return rooms.get(code.toUpperCase());
+export async function getRoom(code: string): Promise<Room | null> {
+  const redis = getRedis();
+  const data = await redis.get<string>(roomKey(code));
+  if (!data) return null;
+  if (typeof data === "string") return JSON.parse(data);
+  return data as unknown as Room;
 }
 
-export function updateRoom(code: string, updater: (room: Room) => Room): Room | undefined {
-  const room = rooms.get(code.toUpperCase());
-  if (!room) return undefined;
-  const updated = updater(room);
-  rooms.set(code.toUpperCase(), updated);
-  return updated;
+export async function saveRoom(room: Room): Promise<void> {
+  const redis = getRedis();
+  await redis.set(roomKey(room.code), JSON.stringify(room), { ex: ROOM_TTL });
 }
 
-export function deleteRoom(code: string): boolean {
-  return rooms.delete(code.toUpperCase());
+export async function deleteRoom(code: string): Promise<void> {
+  const redis = getRedis();
+  await redis.del(roomKey(code));
 }
 
-export function addParticipant(code: string, name: string, role: "voter" | "observer" = "voter") {
-  const room = getRoom(code);
+export async function addParticipant(
+  code: string,
+  name: string,
+  role: "voter" | "observer" = "voter"
+): Promise<{ room: Room; participantId: string } | null> {
+  const room = await getRoom(code);
   if (!room) return null;
+
   const existing = room.participants.find(
     (p) => p.name.toLowerCase() === name.trim().toLowerCase()
   );
   if (existing) return { room, participantId: existing.id };
+
   const id = generateId();
   const color = COLORS[room.participants.length % COLORS.length];
-  const updated = updateRoom(code, (r) => ({
-    ...r,
-    participants: [...r.participants, { id, name: name.trim(), color, role, isHost: false }],
-  }));
-  return { room: updated, participantId: id };
+  room.participants.push({ id, name: name.trim(), color, role, isHost: false });
+  await saveRoom(room);
+  return { room, participantId: id };
 }
